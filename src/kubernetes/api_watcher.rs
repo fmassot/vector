@@ -194,7 +194,10 @@ pub mod stream {
 
 #[cfg(test)]
 mod tests {
-    use crate::{kubernetes::client, tls::TlsOptions};
+    use crate::{
+        kubernetes::{api_watcher, client},
+        tls::TlsOptions,
+    };
 
     use super::*;
     use futures::StreamExt;
@@ -370,7 +373,9 @@ mod tests {
                     // panic! on pass is err is what we expected
                     let error = item.unwrap_err();
                     match error {
-                        watcher::stream::Error::Desync { .. } => {}
+                        watcher::stream::Error::Desync {
+                            source: stream::Error::Desync,
+                        } => {}
                         _ => panic!("expected a desync error"),
                     }
                 })],
@@ -423,7 +428,9 @@ mod tests {
                         // panic! on pass is err is what we expected
                         let error = item.unwrap_err();
                         match error {
-                            watcher::stream::Error::Desync { .. } => {}
+                            watcher::stream::Error::Desync {
+                                source: stream::Error::Desync,
+                            } => {}
                             _ => panic!("expected a desync error"),
                         }
                     }),
@@ -464,7 +471,9 @@ mod tests {
                         // panic! on pass is err is what we expected
                         let error = item.unwrap_err();
                         match error {
-                            watcher::stream::Error::Desync { .. } => {}
+                            watcher::stream::Error::Desync {
+                                source: stream::Error::Desync,
+                            } => {}
                             _ => panic!("expected a desync error"),
                         }
                     }),
@@ -522,23 +531,79 @@ mod tests {
                     when.method(GET).path("/api/v1/pods");
                     then.status(200)
                         .header("Content-Type", "application/json")
+                        .body(r#"not valid json"#);
+                }),
+                vec![Box::new(|item| {
+                    let error = item.unwrap_err();
+                    match error {
+                        watcher::stream::Error::Other {
+                            source:
+                                api_watcher::stream::Error::K8sStream {
+                                    source:
+                                        crate::kubernetes::stream::Error::Parsing {
+                                            source:
+                                                k8s_openapi::ResponseError::Json(serde_json::Error {
+                                                    ..
+                                                }),
+                                        },
+                                },
+                        } => {}
+                        _ => panic!("Expect an 'other' error"),
+                    }
+                })],
+            ),
+            // Valid JSON of Invalid Response API
+            (
+                Box::new(|when, then| {
+                    when.method(GET).path("/api/v1/pods");
+                    then.status(200)
+                        .header("Content-Type", "application/json")
+                        .body(r#"{"a":"b"}"#);
+                }),
+                vec![Box::new(|item| {
+                    let error = item.unwrap_err();
+                    match error {
+                        watcher::stream::Error::Other {
+                            source:
+                                api_watcher::stream::Error::K8sStream {
+                                    source:
+                                        crate::kubernetes::stream::Error::Parsing {
+                                            source:
+                                                k8s_openapi::ResponseError::Json(serde_json::Error {
+                                                    ..
+                                                }),
+                                        },
+                                },
+                        } => {}
+                        _ => panic!("Expect an 'other' error"),
+                    }
+                })],
+            ),
+            // Non-standard object type
+            (
+                Box::new(|when, then| {
+                    when.method(GET).path("/api/v1/pods");
+                    then.status(200)
+                        .header("Content-Type", "application/json")
                         .body(
                             r#"
-                            "type": "ADDED",
-                            "object":
-                                "kind": "Pod",
-                                "apiVersion": "v1",
-                                "metadata": {
-                                    "uid": "uid0"
+                                "type": "nonstandard_type",
+                                "object": {
+                                    "kind": "Status",
+                                    "apiVersion": "v1",
+                                    "metadata": {
+                                        "uid": "uid0"
+                                    }
                                 }
-                            }
-                         }"#,
+                            }"#,
                         );
                 }),
                 vec![Box::new(|item| {
                     let error = item.unwrap_err();
                     match error {
-                        watcher::stream::Error::Other { .. } => {}
+                        watcher::stream::Error::Other {
+                            source: api_watcher::stream::Error::K8sStream { .. },
+                        } => {}
                         _ => panic!("Expect an 'other' error"),
                     }
                 })],
@@ -565,7 +630,18 @@ mod tests {
                 vec![Box::new(|item| {
                     let error = item.unwrap_err();
                     match error {
-                        watcher::stream::Error::Other { .. } => {}
+                        watcher::stream::Error::Other {
+                            source:
+                                api_watcher::stream::Error::K8sStream {
+                                    source:
+                                        crate::kubernetes::stream::Error::Parsing {
+                                            source:
+                                                k8s_openapi::ResponseError::Json(serde_json::Error {
+                                                    ..
+                                                }),
+                                        },
+                                },
+                        } => {}
                         _ => panic!("Expect an 'other' error"),
                     }
                 })],
@@ -599,8 +675,8 @@ mod tests {
                 let item = stream
                     .next()
                     .await
-                    .expect("we have an assertion, but an item wasn't avaialble");
-                assertion(item);
+                    .expect("we have an assertion, but an item wasn't available");
+                assertion(item.unwrap());
             }
             assert!(stream.next().await.is_none(), "expected to cover the whole stream with assertion, but got some items after all assertions passed");
             mock.assert_async().await;
